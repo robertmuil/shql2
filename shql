@@ -1,0 +1,1942 @@
+#!/bin/sh
+# use /bin/sh, /bin/ksh, or /bin/bash
+#
+# shql - version 2b1
+#
+# shql is in the public domain. See the bottom of the README for details.
+#
+# by Bruce Momjian, root AT candle DOT pha DOT pa DOT us
+# Modified by Lorance Stinson, LoranceStinson AT gmail DOT com
+#
+# Unix table file postfixes:
+# @ is attrib, ~ is data, % is view, # is an SQL view
+#
+# $Id: shql,v 1.54 2006/07/03 16:46:51 lorance Exp $
+
+# DEFINE THESE
+# The directories to look for databases in bash-like path form.
+# If SHQL_PATH is already defined do not override it.
+SHQL_PATH=${SHQL_PATH:="/var/shql:~/shql:~/.shql"}
+EDITOR="${EDITOR:=/usr/bin/vi}" # Default editor if EDITOR not defined.
+SHELL="${SHELL:=/bin/sh}"       # Default shell if SHELL not defined.
+
+# Global Setup.
+UMASK=`umask`
+umask 0000                      # Share database
+#set -h                         # Remember functions
+
+# To adapt to System V vs. BSD 'echo'
+if echo '\c' | grep -s c > /dev/null ; then
+    # BSD
+    NOCR1='-n'
+    NOCR2=""
+else
+    # System V
+    NOCR1=""
+    NOCR2='\c'
+fi
+
+NL='
+'
+TAB='	'
+
+_CD=`pwd` # The current directory. Used for /w and /i.
+
+_IFS="$IFS"
+
+export _CD _IFS TABLE CMD NOCR1 NOCR2 NL TAB QUIET
+
+#**************************************************************************
+# usage - Display the command line help text.
+#**************************************************************************
+usage(){
+    if [ "$1" ] ; then
+        echo "$1"
+        echo ""
+    fi
+    eval set X "`echo "$SHQL_PATH" | sed -e 's/:/ /g'`"
+    shift
+    cat<<EOHELP
+Usage:  `basename $0` [options] <database>
+An SQL database written in shell script.
+The following directories are searched in order for databases:
+$@
+Options:
+    -c <db>     Create a new database db in the first writeable
+                directory found in the above list.
+    -d <db>     Dump the database db as SQL.
+    -e <table>  Export table in CSV format.
+    -E <level>  Set the quoting level used for -e.
+        Default 0 = Only strings that require it are quoted.
+                1 = All non-number fields are quoted. -?[0-9.]
+                2 = All fields are quoted except empty ones.
+                3 = All fields are quoted including empty ones.
+    -D          Debug mode.
+    -h          This text.
+    -l          List available databases, their paths and exit.
+    -q          Quite mode, headings are suppressed.
+    -t          List the tabls in the database and exit.
+    -v          List the views in the database and exit.
+EOHELP
+    exit 1
+}
+
+#**************************************************************************
+# syntax - Display the syntax for SQL commands.
+#**************************************************************************
+syntax(){
+    case "$1" in
+        alter) cat <<"END"
+ALTER TABLE table ADD {COLUMN} column type
+    Add a new column to table.
+ALTER TABLE table DROP {COLUMN} column
+    Remove the column from the table.
+ALTER TABLE table RENAME {COLUMN} column TO newcolumn
+    Rename a column in table.
+ALTER TABLE table CHANGE COLUMN columnn TO type
+    Change a columns type.
+ALTER TABLE table RENAME TO newtable
+or
+RENAME table TO newtable
+    Rename a table or view.
+ALTER TABLE table ORDER BY column column { NUM } { ASC | DESC } {, ... }
+    Orders the tables data file on disk by the specified columns.
+END
+return 0
+;;
+        create) cat <<"END"
+CREATE TABLE table (
+        column type[(width)]
+        {, ...}
+)
+Valid column types are char and int.
+or
+CREATE TABLE table AS subselect
+or
+CREATE VIEW view [column {, ...} ] (
+        table_or_view1.column1 = table_or_view2.column2
+)
+END
+return 0
+;;
+        delete|truncate) cat <<"END"
+DELETE
+FROM table
+{ WHERE where_clause }
+or
+TRUNCATE TABLE table
+END
+return 0
+;;
+        drop) cat <<"END"
+DROP TABLE table
+or
+DROP VIEW view
+END
+return 0
+;;
+        edit) cat <<"END"
+EDIT table { AS LIST }
+Edits the data file for the table, optionally in list format.
+END
+return 0
+;;
+        help) cat <<"END"
+HELP ALL
+or
+HELP TABLES
+or
+HELP VIEWS
+or
+HELP COMMANDS
+or
+HELP [ALTER | CREATE | DELETE | DROP | INSERT | SELECT | TRUNCATE | UPDATE |
+      WHERE | FUNCTIONS | PRINT | EDIT | APPEND]
+or
+HELP table
+Commands must appear in lower case.
+END
+return 0
+;;
+        insert|append) cat <<"END"
+INSERT INTO table
+        { ( column, ... ) }
+VALUES ( expression, ...)
+or
+INSERT INTO table
+        { ( column, ... ) }
+subselect
+or
+APPEND table
+    To add a new row using the list format in your editor.
+END
+return 0
+;;
+        print) cat <<"END"
+PRINT table
+is a non-standard synonym for SELECT * FROM table.
+END
+return 0
+;;
+        select) cat <<"END"
+SELECT { DISTINCT }
+        [ column {,...} | * ]
+FROM [ table | view ]
+{ INTO { TABLE} new_table }
+{ WHERE where_clause }
+{ ORDER BY column { NUM } { ASC | DESC } {, ... }
+{ UNION select statement }
+'NUM' is a non-standard method for sorting numeric fields.
+END
+return 0
+;;
+        update) cat <<"END"
+UPDATE table
+SET column = expression {, ... }
+{ WHERE where_clause }
+END
+return 0
+;;
+        where) cat <<"END"
+WHERE [ column | value ] [ =, !=, >, <, >=, <=, and, or, not, in, ~ ]
+      [ column | value | subselect ]
+Parentheses may be used to group expressions.
+~ utilizes the regular expressions built into AWK.
+END
+return 0
+;;
+        functions) cat <<"END"
+The following functions are available:
+char_length(column)     The length of the column.
+index(cola,colb)        The position of colb in cola or 0 if not found
+length(column)          The same as char_length.
+match(col,regexp)       Returns the position in col where the regexp
+                        first matches or 0 if not found.
+lower(column)           Makes all characters in column lower case.
+position(cola IN colb)  The position of cola in colb or 0 if not found
+substr(col,pos,len)     Returns the substring of col starting at pos for
+                        len characters. len is optional.
+upper(column)           Makes all characters in column upper case.
+
+Math functions atan2, cos, exp, int, log, sin and sqrt are available.
+Arguments to functions can be columns or literal strings/numbers.
+Functions can be used as a column in SELECT statements, as expressions in
+UPDATE statements and in all WHERE clauses.
+Functions can be nested and are only available if AWK implements them.
+Functions can not interact with aggregates.
+END
+return 0
+;;
+        syntax) syntax commands; echo
+                syntax functions; echo
+                syntax alter; echo
+                syntax create; echo
+                syntax delete; echo
+                syntax drop; echo
+                syntax insert; echo
+                syntax select; echo
+                syntax update; echo
+                syntax where; echo
+                syntax print; echo
+                syntax edit; echo
+                return 0
+                ;;
+    esac
+    return 1
+}
+
+#**************************************************************************
+# list_databases - List all available databases and their location.
+#**************************************************************************
+list_databases(){
+    echo "Databases:"
+    echo "|-Name-         |-Path-                                  |"
+    ( eval set X "`echo "$SHQL_PATH" | sed -e 's/:/ /g'`"
+      shift
+      while [ "$#" -gt 0 ] ; do
+        for DBNAME in `ls "$1" 2>/dev/null` ; do
+            echo "$DBNAME $1"
+        done
+        shift
+      done ) |
+        sort |
+        awk '{ printf "|%-15.15s|%-40.40s|\n", $1, $2; }';
+}
+
+#**************************************************************************
+# list_relations - Lists the relations in the current database.
+#**************************************************************************
+list_relations(){
+    echo "Relations:"
+    echo "|-Name-         |-Type-|"
+    case "$1" in
+        all)    ls *@ *% *\# 2>/dev/null | sort;;
+        tables) ls *@ *% *\# 2>/dev/null |
+                    cut -d@ -f1 | cut -d% -f1 | cut -d\# -f1 |
+                    uniq -u | sort;;
+        views)  ls *% *\# 2>/dev/null | sort;;
+        *)      return 1;;
+    esac | awk '{name = substr($0,1,length($0) -1 );
+                 type = substr($0,length($0));
+                 if (type == "@")
+                    type = "Table";
+                 else if (type == "%" || type == "#")
+                    type = "View";
+                 else {
+                     name=$0
+                     type="Table"
+                 }
+                 if (last != name)
+                     printf "|%-15.15s|%-6.6s|\n", name, type;
+                 last = name}';
+}
+
+#**************************************************************************
+# help - The online help interface.
+#**************************************************************************
+help(){
+    if [ ! "$2" ] ; then
+        echo "Ambiguous syntax, try:" 1>&2 ; syntax help
+    elif [ "$2" = "all" ] ; then
+        list_relations "all"
+    elif [ "$2" = "tables" ] ; then
+        list_relations "tables"
+    elif [ "$2" = "views" ] ; then
+        list_relations "views"
+    elif [ "$2" = "commands" ] ; then
+        cat << "END"
+Available Commands:
+/a <table>  The same as append table.
+/c          Clears the screen.
+/d[t|v]     Lists tables and views, only tables or only views.
+/d <table>  Displays the details of table.
+/e [table]  Edits the contents of the query buffer or the table header.
+/g          Go/Execute the contents of the query buffer.
+/h [topic]  The same as 'help [TOPIC]'.
+/i [file]   Includes a file.
+/l          List available databases.
+/p [table]  Prints the current query buffer or the contents of table.
+/p/g        Print and Go.
+/q          Quites shql.
+/r          Resets(clears) the query buffer.
+/s [cmd]    Executes cmd or starts a new shell.
+/u <db>     Use the database db.
+/w [file]   Writes the query to a file.
+/! [cmd]    Executes cmd or starts a new shell.
+/?          The same as 'help commands'.
+The number sign(#) may be used at the start of a line for comments.
+Commands with options must be on their own line.
+END
+    else
+        syntax $2 && return
+        TABLE="$2"
+        update_view "$TABLE"
+        STRING="Table"
+        [ -f "${2}%" -o -f "${2}#" ] && STRING="View"
+        if [ -f "$2@" ] ; then
+            echo "$NL$STRING: \"$2\""
+            ( echo "-Column-${TAB}-Type-${TAB}-Width-" && cat "$2@" ) |
+            awk -F"$TAB" \
+                '{if (NR == 1) {
+                    type=$2;
+                    width=$3;
+                } else {
+                    match($2, "[0-9]");
+                    type = substr($2,1,RSTART -1);
+                    width = substr($2,RSTART);
+                }
+                printf "|%-15.15s|%-6.6s|%7.7s|\n", $1, type, width}'
+            [ -f "${2}%" -o -f "${2}#" ] &&
+                echo $NOCR1 "$NL Definition:$TAB$NOCR2"
+            [ -f "${2}%" ] && set X `cat $2%` && shift && echo "$1.$2 = $3.$4"
+            [ -f "${2}#" ] && eval set X `cat $2#` && shift 5 && echo "$@"
+            echo "$NL Rows:$TAB"`cat $TABLE~ | wc -l`
+        else
+            echo "$TABLE does not exist." 1>&2
+            syntax help
+        fi
+    fi
+}
+
+#**************************************************************************
+# lookup_field - Find the information for a field.
+#**************************************************************************
+lookup_field(){
+    FORMAT="`grep -n \"^$1$TAB\" $TABLE@ 2>/dev/null | sed 1q`"
+    if [ ! "$FORMAT" ] ; then
+        OUTFIELD="$1"
+        return 1
+    else
+        OUTFIELDNUM="`expr "$FORMAT" : '\([^:]*\)'`"
+        OUTFIELD="\$$OUTFIELDNUM"
+        return 0
+    fi
+}
+
+#**************************************************************************
+# do_aggreg
+#**************************************************************************
+do_aggreg(){
+    case "X$1" in
+        Xavg)   AGGREG='(total/cnt)';;
+        Xcount) AGGREG='cnt';;
+        Xmax)   AGGREG='max';;
+        Xmin)   AGGREG='min';;
+        Xsum)   AGGREG='total';;
+        *)      return 1;;
+    esac
+
+    [ "X$2" != "X(" -o "X$4" != "X)" ] &&
+        echo "Bad aggregate syntax" 1>&2 && syntax select && return 1
+    AGGFIELD="$3"
+    shift 4
+    [ "X$AGGFIELD" = "X*" ]  &&
+        AGGFIELD=`sed -n -e '1p' $TABLE@` &&
+        AGGFIELD=`expr "$AGGFIELD" : '\([^	]*\)'`
+    lookup_field "$AGGFIELD"
+    [ "$?" -ne 0 ] && echo "Bad field name ($1)" 1>&2 && return 1
+    while [ $# -ne 0 ] ; do
+        [ "X$1" = "Xwhere" ] && break;
+        [ "X$1" = "Xorder" ] && break;
+        [ "X$1" = "Xunion" ] && break;
+        shift
+    done
+
+    OUTFIELD=`( SUBSELECT="Y" ; AGGREGATE="Y"; \
+        select_ "select" "$AGGFIELD" "from" "$TABLE" "$@") |
+        sed -e 's/"//g' |
+        awk -F"$TAB" \
+            'NR == 1 { min = $1; max = $1 }
+             { cnt += 1; total += $1 }
+             $1 < min { min = $1 }
+             $1 > max { max = $1 }
+             END { printf "%s%s%s", "\"", '$AGGREG', "\"" }'`
+    if [ `expr "$FORMAT" : '[^	]*	[a-z]*\(.*\)'` -lt 10 ] ; then
+        FORMAT="$AGGFIELD${TAB}char10"
+    fi
+    return 0
+}
+
+#**************************************************************************
+# do_func
+# If a function is passed places the AWK code to execute it is placed in
+# $OUTFIELD and $FORMAT is set. The number of parameters to shift out is
+# returned or 0 if there was an error.
+#**************************************************************************
+do_func(){
+    case "$1" in
+    atan2|index|match)
+        STRING="$1"
+        shift 2
+        eval "`(lookup_func \"$@\")`"
+        FIELD1="$OUTFIELD"
+        SHIFT="$FUNCSHIFT"
+        shift $FUNCSHIFT
+        eval "`(lookup_func \"$@\")`"
+        FIELD2="$OUTFIELD"
+        OUTFIELD="$STRING($FIELD1,$FIELD2)"
+        FORMAT="0:$STRING${TAB}int10"
+        [ ! "$QUIET" -a "$FUNCSELECT" = "Y" ] &&
+            OUTFIELD="(cnt == 1 ? \"($STRING)\" : $OUTFIELD)"
+        return `expr "$SHIFT" + "$FUNCSHIFT" + 3`;;
+    length|char_length|cos|exp|log|sin|sqrt|int)
+        STRING="$1"
+        [ "$STRING" = "char_length" ] && STRING="length"
+        shift 2
+        eval "`(lookup_func \"$@\")`"
+        OUTFIELD="$STRING($OUTFIELD)"
+        [ ! "$QUIET" -a "$FUNCSELECT" = "Y" ] &&
+            OUTFIELD="(cnt == 1 ? \"($STRING)\" : $OUTFIELD)"
+        FORMAT="0:$STRING${TAB}int10"
+        return `expr "$FUNCSHIFT" + 3`;;
+    lower|upper)
+        STRING="$1"
+        shift 2
+        eval "`(lookup_func \"$@\")`"
+        if [ "$STATUS" -eq 0 ] ; then
+            WIDTH=`expr "$FORMAT" : '[^	]*	\([a-z]*.*\)'`
+        else
+            WIDTH="char"`expr \`echo "$1" | wc -m\` + 0`
+        fi
+        OUTFIELD="to$STRING($OUTFIELD)"
+        [ ! "$QUIET" -a "$FUNCSELECT" = "Y" ] &&
+            OUTFIELD="(cnt == 1 ? \"($STRING)\" : $OUTFIELD)"
+        FORMAT="0:$STRING$TAB$WIDTH"
+        return `expr "$FUNCSHIFT" + 3`;;
+    position)
+        shift 2
+        eval "`(lookup_func \"$@\")`"
+        FIELD1="$OUTFIELD"
+        SHIFT="$FUNCSHIFT"
+        shift $FUNCSHIFT; shift
+        eval "`(lookup_func \"$@\")`"
+        FIELD2="$OUTFIELD"
+        OUTFIELD="index($FIELD2,$FIELD1)"
+        [ ! "$QUIET" -a "$FUNCSELECT" = "Y" ] &&
+            OUTFIELD="(cnt == 1 ? \"(pos)\" : $OUTFIELD)"
+        FORMAT="0:position${TAB}int5"
+        return `expr "$SHIFT" + "$FUNCSHIFT" + 4`;;
+    substr)
+        shift 2
+        eval "`(lookup_func \"$@\")`"
+        SHIFT="$FUNCSHIFT"
+        shift $FUNCSHIFT
+        if [ "$STATUS" -eq 0 ] ; then
+            WIDTH=`expr "$FORMAT" : '[^	]*	\([a-z]*.*\)'`
+        else
+            WIDTH="char"`expr \`echo "$OUTFIELD" | wc -m\` + 0`
+        fi
+        STRING="$OUTFIELD"
+        eval "`(lookup_func \"$@\")`"
+        SHIFT=`expr "$SHIFT" + "$FUNCSHIFT"`
+        shift $FUNCSHIFT
+        POS="$OUTFIELD"
+        if [ "X$1" != "X)" ] ; then
+            eval "`(lookup_func \"$@\")`"
+            SHIFT=`expr "$SHIFT" + "$FUNCSHIFT"`
+            if [ "$STATUS" -eq 0 ] ; then
+                FORMAT="0:substr$TAB$WIDTH"
+            else
+                WIDTH=`expr "$WIDTH" : '\([a-z]*\).*'`
+                FORMAT="0:substr$TAB$WIDTH$OUTFIELD"
+            fi
+            OUTFIELD="substr($STRING,$POS,$OUTFIELD)"
+        elif [ "X$1" != "X)" ] ; then
+            echo "Invalid function specification" 1>&2
+            return 0
+        else
+            OUTFIELD="substr($STRING,$POS)"
+            FORMAT="0:substr$TAB$WIDTH"
+        fi
+        [ ! "$QUIET" -a "$FUNCSELECT" = "Y" ] &&
+            OUTFIELD="(cnt == 1 ? \"(substr)\" : $OUTFIELD)"
+        return `expr "$SHIFT" + 3`;;
+    -|+|\*|\/|%|^) # Check for basic arithmetic.
+        STRING="$1"
+        shift
+        SHIFT="$FUNCSHIFT"
+        FIELD1="$OUTFIELD"
+        eval "`(lookup_func \"$@\")`"
+        OUTFIELD="$FIELD1 $STRING $OUTFIELD"
+        case "$STRING" in
+            %)  STRING="modulo";;
+            +)  STRING="add";;
+            -)  STRING="subtract";;
+            \*) STRING="multiply";;
+            /)  STRING="divide";;
+            ^)  STRING="exponent";;
+        esac
+        [ ! "$QUIET" -a "$FUNCSELECT" = "Y" ] &&
+            OUTFIELD="(cnt == 1 ? \"($STRING)\" : $OUTFIELD)"
+        FORMAT="0:$STRING${TAB}int10"
+        return `expr "$SHIFT" + "$FUNCSHIFT" + 1`;;
+    esac
+    return 0
+}
+
+#**************************************************************************
+# lookup_func - Peroforms a lookup of a field, function or aggregate.
+# This function prints the results of the lopkup. Eval the output.
+#**************************************************************************
+lookup_func(){
+    # Prepare for the lookup.
+    FUNCSHIFT="1"
+    STATUS="0"
+
+    # Perform the lookup.
+    lookup_field "$1"
+    if [ "$?" -ne 0 ] ; then
+        do_func "$@"
+        FUNCSHIFT="$?"
+        STATUS="0"
+        [ "$FUNCSHIFT" -eq 0 ] && STATUS="1" && FUNCSHIFT="1"
+    fi
+
+    # Check for and process basic arithmetic.
+    shift $FUNCSHIFT
+    if [ $# -ge 2 -a `expr "X$1" : 'X[-+\*\/%^]$'` -ne 0 ] ; then
+        do_func "$@"
+        FUNCSHIFT="$?"
+        STATUS="0"
+        [ "$FUNCSHIFT" -eq 0 ] && STATUS="1" && FUNCSHIFT="1"
+    fi
+
+    # Return the results.
+    OUTFIELD=`echo "$OUTFIELD" | sed -e 's/"/\\\\"/g' -e 's/\\$/\\\\$/g'`
+    FORMAT=`echo "$FORMAT" | sed -e 's/"/\\\\"/g' -e 's/\\$/\\\\$/g'`
+    echo "FUNCSHIFT=\"$FUNCSHIFT\"; \
+          OUTFIELD=\"$OUTFIELD\"; \
+          FORMAT=\"$FORMAT\"; \
+          STATUS=\"$STATUS\""
+}
+
+#**************************************************************************
+# do_join - Peforms a join between two tables and updates the views files.
+#**************************************************************************
+do_join(){
+    # Update and check the first table and field.
+    TABLE1=$1
+    update_view "$TABLE1"
+    TABLE="$TABLE1"
+    lookup_field "$2"
+    [ "$?" -ne 0 ] && echo "Bad view specifcation ($1.$2)" 1>&2 && return 1
+    JFIELD1="$OUTFIELDNUM"
+    JFIELD1L1="`expr $JFIELD1 - 1`"
+
+    # Update and check the second table and field.
+    TABLE2=$3
+    update_view "$TABLE2"
+    TABLE="$TABLE2"
+    lookup_field "$4"
+    [ "$?" -ne 0 ] && echo "Bad view specifcation ($3.$4)" 1>&2 && return 1
+    JFIELD2="$OUTFIELDNUM"
+    JFIELD2L1="`expr $JFIELD2 - 1`"
+    VIEW="$5"
+
+    # Create the header file.
+    ( grep "^$2$TAB" $TABLE1@;
+      grep -v "^$2$TAB" $TABLE1@;
+      grep -v "^$4$TAB" $TABLE2@ ) > $VIEW@
+
+    # Check for any column restrictions.
+    AWK="{print \$0}"
+    if [ $# -gt 5 ] ; then
+        shift 5
+        rm -f /tmp/$$
+        TABLE="$VIEW"
+        AWK=""
+        while [ $# -gt 0 ] ; do
+            lookup_field "$1"
+            [ "$?" -ne 0 ] && echo "Bad field name ($1)" 1>&2 && return
+            grep "^$1" $VIEW@ >> /tmp/$$
+            [ "$AWK" ] && AWK="$AWK,"
+            AWK="$AWK $OUTFIELD"
+            shift
+        done
+        AWK="BEGIN {OFS=FS} {print $AWK}"
+        mv /tmp/$$ $VIEW@
+    fi
+
+    # Create the data file.
+    sort -t\	 +$JFIELD2L1 $TABLE2~ > /tmp/$$
+    sort -t\	 +$JFIELD1L1 $TABLE1~ |
+        join -t\	 -j1 $JFIELD1 -j2 $JFIELD2 - /tmp/$$ |
+        awk -F"$TAB" "$AWK" > $VIEW~
+}
+
+#**************************************************************************
+# update_view - Starts the update process if the table is a view.
+#**************************************************************************
+update_view(){
+    if [ -f "$1#" ] ; then
+        ( rm -f $1~ $1@
+          CREATEINTO="$1"
+          eval set X `cat $1#`
+          shift 5
+          SUBSELECT=""
+          select_ "$@" ) > /dev/null
+    elif [ -f "$1%" ] ; then
+        ( do_join `cat $1%` )
+    else
+        return 1
+    fi
+    return
+}
+
+#**************************************************************************
+# where - Processes the WHERE part of an SQL statement.
+#**************************************************************************
+where(){
+    shift
+    while [ $# -gt 0 -a "$1" != "order" -a "$1" != "union" ] ; do
+        if [ "X$1" = "Xselect" ] ; then
+            IFS="$NL"
+            set X `( SUBSELECT="Y"; select_ "$@")`
+            IFS="$_IFS"
+            if [ "$?" -eq 0 ] ; then
+                shift
+            else
+                return 1
+            fi
+        fi
+        case "$1" in
+                and)    WHERE="$WHERE && ";;
+                or)     WHERE="$WHERE || ";;
+                not)    WHERE="$WHERE !" ;;
+                =)      WHERE="$WHERE == ";;
+                ~)      WHERE="$WHERE ~ ";;
+                'in')   shift
+#echo "`select_ "$@"`" 1>&2
+                        IFS="$NL"
+                        set X `( SUBSELECT="Y"; select_ "$@" )`
+                        IFS="$_IFS"
+                        if [ "$?" -eq 0 ] ; then
+                            shift
+                        else
+                            return 1
+                        fi
+                        INWHERE=""
+                        COMP="=="
+                        LOGIC="||"
+                        [ "X$LAST" = "Xnot" ] && COMP="=" && LOGIC="&&"
+                        [ "$#" -eq 0 ] && set "\"__()__\""
+                        while [ $# -gt 0 ] ; do
+                            [ "X$INWHERE" != "X" ] &&
+                                INWHERE="$INWHERE $LOGIC"
+                            INWHERE="$INWHERE ($WHERE$COMP $1) "
+                            shift
+                        done
+                        WHERE="$INWHERE"
+                        break;;
+                *)      eval "`(lookup_func \"$@\")`"
+                        if [ "$STATUS" -eq 0 ] ; then
+                            shift `expr $FUNCSHIFT - 1`
+                        else
+                            OUTFIELD="$1"
+                        fi
+                        WHERE="$WHERE $OUTFIELD";;
+        esac
+        LAST="$1"
+        shift
+    done
+    [ "$WHERE" ] && WHERE=" ( $WHERE ) " && return 0
+    echo "Missing 'where' clause" 1>&2
+    syntax where
+    return 1
+}
+
+#**************************************************************************
+# create - Create a table or a view.
+#**************************************************************************
+create(){
+    shift
+    if [ -f "$2@" -o -f "$2%" -o -f "$2#" ] ; then
+        echo "Table already exists." 1>&2
+    elif [ "X$1" = "Xview" -a $# -gt 2 ] ; then
+        VIEW="$2"
+
+        # Create the view from a select statement.
+        if [ "X$3" = "Xas" ] ; then
+            shift 3
+            CREATEINTO="$VIEW"
+            select_ "$@"
+            if [ $? -eq 0 ] ; then
+                echo "$CMD" > $VIEW\#
+            else
+                rm -f $VIEW*
+            fi
+            return
+        fi
+        shift 2
+
+        # Collect and columns for the view.
+        COLUMNS=""
+        while [ $# -gt 0 -a "X$1" != "X(" ] ; do
+            COLUMNS="$COLUMNS $1"
+            shift
+        done
+
+        # Get the rest of the field definition.
+        [ "X$1" != "X(" ] && echo "Bad syntax" 1>&2 && syntax create && return
+        TABLE1="`expr $2 : '\([^\.]*\)'`"
+        FIELD1="`expr $2 : '[^\.]*.\(.*\)'`"
+        TABLE="$TABLE1"
+        lookup_field "$FIELD1"
+        [ "$?" -ne 0 ] && echo "Bad table or field name" 1>&2 && return
+        [ "X$3" != "X=" ] && echo "Bad syntax" 1>&2 && syntax create && return
+        TABLE2="`expr $4 : '\([^\.]*\)'`"
+        FIELD2="`expr $4 : '[^\.]*.\(.*\)'`"
+        TABLE="$TABLE2"
+        lookup_field "$FIELD2"
+        [ "$?" -ne 0 ] && echo "Bad table or field name" 1>&2 && return
+
+        # Check the columns.
+        if [ "$COLUMNS" ] ; then
+            eval set X $COLUMNS
+            shift
+            while [ $# -gt 0 ] ; do
+                TABLE="$TABLE1"
+                lookup_field "$1"
+                if [ "$?" -ne 0 ] ; then
+                    TABLE="$TABLE2"
+                    lookup_field "$1"
+                    [ "$?" -ne 0 ] && echo "Bad field name ($1)" 1>&2 &&
+                        return
+                fi
+                shift
+            done
+        fi
+
+        # Create the view definition and update it.
+        echo "$TABLE1 $FIELD1 $TABLE2 $FIELD2 $VIEW$COLUMNS" > $VIEW%
+        update_view "$VIEW" && echo "OK"
+    elif [ "X$1" = "Xtable" -a $# -ge 5 ] ; then
+        # Create table.
+        TABLE="$2"
+        if [ "X$3" = "Xas" ] ; then
+            shift 3
+            CREATEINTO="$TABLE"
+            select_ "$@"
+            return
+        elif [ "X$3" != "X(" ] ; then
+            echo "Bad syntax" 1>&2
+            syntax create
+            return
+        fi
+        shift 3
+        > $TABLE@
+        > $TABLE~
+        while [ $# -ge 2 ] ; do
+            NAME="$1"
+            TYPE="$2"
+            case $TYPE in
+                *char*) TYPE="char";;
+                *int*)  TYPE="int";;
+                *)      echo "Invalid column type ($TYPE)" 1>&2
+                        syntax create
+                        rm $TABLE*
+                        return;;
+            esac
+
+            # Set the width.
+            if [ "X$3" = "X(" ] ; then
+                # Get and check the column width.
+                WIDTH="$4"
+                [ ! "$WIDTH" -a ! `expr $WIDTH : '\([0-9]*\)$'` ] &&
+                    echo "Bad columnwidth ($WIDTH)" 1>&2 &&
+                    syntax create && rm $TABLE* && return
+                [ "X$5" != "X)" ] &&
+                    echo "Bad column specification ($NAME)" 1>&2 &&
+                    syntax create && rm $TABLE* && return
+                shift 3
+            else
+                # Set the width to the width of the column name.
+                WIDTH=`echo "$NAME" | wc -m`
+                WIDTH=`expr $WIDTH + 1`
+            fi
+            echo "$NAME$TAB$TYPE$WIDTH" >> $TABLE@
+            shift 2
+        done
+        [ "X$1" != "X)" ] && echo "Bad syntax" 1>&2 &&
+            rm -f $TABLE* && syntax create && return
+        echo "OK"
+    else
+        echo "Improper syntax ($1)" 1>&2
+        syntax create
+    fi
+    return
+}
+
+#*************************************************************************
+# drop - Delete a table or view.
+#**************************************************************************
+drop(){
+    [ "$2" != "table" -a "$2" != "view" ] &&
+        echo "Syntax error." 1>&2 && syntax drop && return
+    [ "$2" = "table" -a \( -f "$3%" -o -f "$3#" \) ] &&
+        echo "Can not drop, $3 is a view, not a table" 1>&2 && return
+    [ "$2" = "view" -a ! \( -f "$3%" -o -f "$3#" \) ] &&
+        echo "Can not drop, $3 is not a view" 1>&2 && return
+    if [ -f "$3@" -o -f "$3%" ] ; then
+        rm -f $3@ $3~ $3% $3\#
+        echo "OK"
+    else
+        echo "No such table" 1>&2
+    fi
+}
+
+#**************************************************************************
+# insert - Insert data into a table.
+#**************************************************************************
+insert(){
+    shift
+    [ "X$1" != "Xinto" ] && echo "Improper syntax ($1)" 1>&2 &&
+        syntax insert && return
+    shift
+    TABLE="$1"
+    [ -f "$TABLE%" -o -f "$TABLE#" ] &&
+        echo "Can not insert into a view" 1>&2 && return
+    [ ! -f "$TABLE@" ] && echo "Table does not exist" 1>&2 && return
+    shift
+    ATTRIB="`cat $TABLE@ | wc -l`"
+    XASGN=""
+    XECHO="echo \""
+    if [ $# -gt 0 -a "X$1" = "X(" ] ; then
+        ATTRIB2="0"
+        shift
+        while [ $# -gt 0 -a "X$1" != "X)" ] ; do
+            lookup_field "$1"
+            [ "$?" -ne 0 ] && echo "Bad field name. ($1)" 1>&2 && return
+            XASGN="$XASGN X$OUTFIELDNUM=\`eval echo \$1\` ; shift;"
+            shift
+            ATTRIB2=`expr $ATTRIB2 + 1`
+        done
+        [ "X$1" != "X)" ] && echo "Syntax error ($1)" 1>&2 &&
+            syntax insert && return
+        shift
+        POS="1"
+        while [ "$POS" -le "$ATTRIB" ] ; do
+            eval X$POS=""
+            [ "$POS" != "1" ] && XECHO="$XECHO\$TAB"
+            XECHO="$XECHO\$X$POS"
+            POS=`expr $POS + 1`
+        done
+        XECHO="$XECHO\""
+        ATTRIB="$ATTRIB2"
+    fi
+    if [ "X$1" = "Xselect" ] ; then
+        IFS="$NL"
+        set X `( SUBSELECT='Y';select_ "$@"; echo ")" )`
+        IFS="$_IFS"
+        shift
+    elif [ "X$1" != "Xvalues" -o "X$2" != 'X(' ] ; then
+        echo "Improper syntax ($1)" 1>&2 && syntax insert && return
+    else
+        shift 2
+    fi
+    for LAST do
+    : ; done
+    [ "X$LAST" != "X)" ] &&
+        echo "Improper syntax" 1>&2 && syntax insert && return
+    if [ "`expr \( $# - 1 \) % $ATTRIB`" -ne 0 ] ; then
+        echo "Incorrect number of values." 1>&2
+    else
+        ROWS="`expr \( $# - 1 \) / $ATTRIB`"
+        while [ $# -gt 1 ] ; do
+            if [ "$XASGN" = "" ] ; then
+                echo $NOCR1 "`eval echo $1`$NOCR2" >> $TABLE~
+                shift
+                while [ "`expr \( $# - 1 \) % $ATTRIB`" -ne 0 ] ; do
+                    echo $NOCR1 "$TAB`eval echo $1`$NOCR2" >> $TABLE~
+                    shift
+                done
+                echo "" >> $TABLE~
+            else
+                eval $XASGN
+                eval $XECHO >> $TABLE~
+            fi
+        done
+        echo "( $ROWS rows )"
+    fi
+}
+
+#*************************************************************************
+# delete - Delete data from a table.
+#**************************************************************************
+delete(){
+    TABLE="$3"
+    [ "X$2" != "Xfrom" ] && echo "Improper syntax ($2)" 1>&2 &&
+        syntax delete && return
+    [ -f "$TABLE%" -o -f "$TABLE#" ] &&
+        echo "You can not delete from a view." 1>&2 && return
+    [ ! -f "$TABLE@" ] && echo "$TABLE does not exist." 1>&2 && return
+    WHERE=""
+    if [ "X$4" = "Xwhere" ] ; then
+        shift 3
+        where "$@" &&
+        awk -F"$TAB" \
+            "! $WHERE { cnt += 1 ; print }
+            END { printf \"( %1d rows )\\n\", (NR - cnt) >\"/tmp/$$row\" }" \
+            $TABLE~ > /tmp/$$ && mv /tmp/$$ $TABLE~ && cat /tmp/$$row
+    else
+        echo '( '`expr \`cat $TABLE~ | wc -l\` + 0`' rows )'
+        > $TABLE~
+    fi
+}
+
+#*************************************************************************
+# update - Update a table.
+#**************************************************************************
+update(){
+    TABLE="$2"
+    [ -f "$TABLE%" -o -f "$TABLE#" ] &&
+        echo "Can not update a view." 1>&2 && return
+    [ ! -f "$TABLE@" ] && echo "$TABLE does not exit." 1>&2 && return
+    [ "X$3" != "Xset" ] && echo "Improper syntax." 1>&2 &&
+        syntax update && return
+    shift 3
+    ASSIGN=""
+    while [ $# -gt 0 -a "X$1" != "Xwhere" ] ; do
+        eval "`(lookup_func \"$@\")`"
+        if [ "$STATUS" -eq 0 ] ; then
+            [ "X$2" = "X=" ] && ASSIGN="$ASSIGN ; "
+            shift `expr $FUNCSHIFT - 1`
+        else
+            OUTFIELD="$1"
+        fi
+        ASSIGN="$ASSIGN $OUTFIELD"
+        shift
+    done
+    WHERE=""
+    if [ "X$1" = "Xwhere" ] ; then
+        where "$@" || return
+    fi
+    awk -F"$TAB" \
+        "BEGIN  { OFS = \"$TAB\" }
+        $WHERE  { $ASSIGN; cnt += 1 }
+                { print }
+        END     { printf \"( %1d rows )\\n\", cnt >\"/tmp/$$row\" }" \
+        $TABLE~ > /tmp/$$ && mv /tmp/$$ $TABLE~ && cat /tmp/$$row
+}
+
+#**************************************************************************
+# select_ - Performs a select.
+#**************************************************************************
+select_(){
+    UNION="Y"
+    while [ "$UNION" != "" ] ; do
+        INAGG=""
+        FROM=""
+        UNION=""
+        TABLE=""
+        INTO=""
+        for ATABLE do
+            case "X$ATABLE" in
+                Xwhere|Xorder|Xunion) break;;
+                Xfrom) FROM="Y"; continue;;
+                Xinto) [ ! "$INTO" ] && INTO="Y" && continue;;
+            esac
+            if [ "$INTO" -a ! "$FROM" ] ; then
+                [ "X$ATABLE" = "Xtable" ] && continue
+                INTO="$ATABLE"
+                [ -f "$INTO@" ]  &&
+                    echo "Table already exists." 1>&2 && return 1
+            fi
+            if [ "$FROM" ] ; then
+                [ ! -f "$ATABLE@" ] &&
+                    echo "$ATABLE does not exist." 1>&2 && return 1
+                if [ ! "$TABLE" ] ; then
+                    TABLE="$ATABLE"
+                else
+                    JTABLE="$TABLE"
+                    PREV=""
+                    PPREV=""
+                    FOUND=""
+                    for GETJ do
+                        if [ "$PREV" = "=" ] ; then
+                            TABLE="$JTABLE"
+                            lookup_field "$PPREV" &&
+                            TABLE="$ATABLE" &&
+                            lookup_field "$GETJ" &&
+                            FOUND="Y1" &&
+                            break
+                            TABLE="$ATABLE"
+                            lookup_field "$PPREV" &&
+                            TABLE="$JTABLE" &&
+                            lookup_field "$GETJ" &&
+                            FOUND="Y2" &&
+                            break
+                        fi
+                        PPREV="$PREV"
+                        PREV="$GETJ"
+                    done
+                    [ ! "$FOUND" ] &&
+                        echo "Join not found, \c" &&
+                        echo "try reordering tables." 1>&2 && return 1
+                    if [ "$FOUND" = "Y1" ] ; then
+                        echo "$JTABLE$TAB$PPREV$TAB$ATABLE$TAB$GETJ$TAB/tmp/$$join2" > /tmp/$$join2%
+                    else
+                        echo "$ATABLE$TAB$PPREV$TAB$JTABLE$TAB$GETJ$TAB/tmp/$$join2" > /tmp/$$join2%
+                    fi
+                    update_view /tmp/$$join2
+                    mv /tmp/$$join2~ /tmp/$$join~
+                    mv /tmp/$$join2@ /tmp/$$join@
+                    expr "$FORMAT" : '[^:]*:\(.*\)' >>/tmp/$$join@
+                    cut -d\	 -f1 /tmp/$$join~ |
+                        paste /tmp/$$join~ - >/tmp/$$
+                    mv /tmp/$$ /tmp/$$join~
+                    TABLE="/tmp/$$join"
+                fi
+            fi
+        done
+        [ ! "$FROM" ] && echo "Syntax error." 1>&2 && syntax select && return 1
+        update_view "$TABLE"
+        [ "$INTO" = "" -a "$CREATEINTO" != "" ] &&
+            INTO="$CREATEINTO" && CREATEINTO=""
+        shift
+        DISTINCT=""
+        [ "X$1" = "Xdistinct" ] && DISTINCT="Y" && shift
+        if [ "X$1" = 'X*' ] ; then
+            shift
+            set X `cat $TABLE@ | cut -d\	 -f1` "$@"
+            shift
+        fi
+        FIELDS=""
+        PRINTF=""
+        while [ "X$1" != "Xfrom" -a "X$1" != "Xinto" ] ; do
+            eval "`( FUNCSELECT="Y"; lookup_func \"$@\" )`"
+            if [ "$STATUS" -eq 0 ] ; then
+                shift `expr $FUNCSHIFT - 1`
+            else
+                do_aggreg "$@"
+                if [ "$?" -eq 0 ] ; then
+                    shift 3
+                    INAGG="Y"
+                else
+                    echo "Bad field name ($1)" 1>&2
+                    return 1
+                fi
+            fi
+            [ "$INTO" ] && echo "$FORMAT" | sed 's/^[^:]*://' >> $INTO@
+            [ "$FIELDS" ] && FIELDS="$FIELDS,"
+            FIELDS="$FIELDS $OUTFIELD"
+            if [ "$INTO" ] ; then
+                [ "$PRINTF" ] && PRINTF="$PRINTF$TAB"
+                PRINTF="$PRINTF%s"
+            elif [ "$SUBSELECT" = "" ] ; then
+                [ ! "$PRINTF" ] && PRINTF="|"
+                WIDTH=`expr "$FORMAT" : '[^	]*	[a-z]*\(.*\)'`
+                PRINTF="$PRINTF%"
+                [ `expr "$FORMAT" : '.*	\(int\).*'` ] || PRINTF="$PRINTF-"
+                PRINTF="$PRINTF$WIDTH.${WIDTH}s|"
+            else
+                if [ ! "$AGGREGATE" ] ; then
+                    PRINTF="$PRINTF%s\n"
+                else
+                    PRINTF="$PRINTF%s\n"
+                fi
+            fi
+            shift
+        done
+
+        shift 2
+        WHERE=""
+        WHERE_USED=""
+        SORT=""
+        while [ $# -ne 0 ] ; do
+            case "X$1" in
+                Xwhere)
+                    if [ "$WHERE_USED" = "" ] ; then
+                        where "$@"
+                        [ "$?" -ne 0 ] && return 1
+                        [ "$QUIET" = "" -a "$SUBSELECT" = "" ] &&
+                            WHERE="$WHERE || NR == 1"
+                        WHERE_USED="Y"
+                    fi
+                    shift;;
+                Xorder)
+                    [ "X$2" != "Xby" ] && echo "Syntax error ($2)" 1>&2 &&
+                        syntax select && return 1
+                    shift 2
+                    while [ $# -gt 0 -a "$1" != "union" ] ; do
+                        if [ "X$1" != "Xasc" -a \
+                             "X$1" != "Xdesc" -a \
+                             "X$1" != "Xnum" ] ; then
+                            lookup_field "$1"
+                            [ "$?" -ne 0 ] &&
+                                echo "Bad field name ($1)" 1>&2 && return 1
+                            [ "$SORT" = "" ] && SORT="sort -t\"	\" "
+                            SORTL="`expr $OUTFIELDNUM - 1`"
+                            SORT="$SORT +$SORTL"
+                            [ "X$2" = "Xnum" ] && SORT="${SORT}n"
+                            [ `expr "$FORMAT" : '.*	\(int\).*'` ] &&
+                                SORT="${SORT}n"
+                            [ "X$2" = "Xdesc" -o "X$3" = "Xdesc" ] &&
+                                SORT="${SORT}r"
+                            SORT="$SORT -$OUTFIELDNUM"
+                        fi
+                        shift
+                    done;;
+                Xunion)
+                    shift
+                    UNION="Y"
+                    WHERE_USED=""
+                    break;;
+                *)  shift;;
+            esac
+        done
+        [ "$INAGG" ] && WHERE="NR == 1"
+
+        if [ "$DISTINCT" != "" ] ; then
+            if [ "$SORT" = "" ] ; then
+                DIST="sort | uniq | tee /tmp/$$row"
+            else
+                DIST="uniq | tee /tmp/$$row"
+            fi
+        else
+            DIST="cat"
+        fi
+
+        if [ "$INTO" ] ; then
+            [ "$QUIET" = "" ] && DIST="$DIST | sed '1d'"
+            DIST="$DIST > $INTO~"
+        fi
+
+        TABLEFILE="$TABLE~"
+        [ "$SORT" != "" ] && cat $TABLE~ | eval "$SORT" > /tmp/$$ &&
+            TABLEFILE="/tmp/$$"
+
+        if [ "$SUBSELECT" ] ; then
+            awk -F"$TAB" "$WHERE {printf \"$PRINTF\", $FIELDS }" $TABLEFILE |
+                sed -e 's/\\/\\\\/g' \
+                    -e "s/\(['()\/\&]\)/\\1/g" \
+                    -e 's/\([$`]\)/\\\1/g' \
+                    -e 's/"/\\\"/g' \
+                    -e 's/^\(.*\)$/"\1"/' |
+                eval "$DIST"
+        else
+            if [ ! "$QUIET" -o "$INAGG" = "Y" ] ; then
+                ( set X `cut -d\	 -f1 $TABLE@` ; shift
+                  echo $NOCR1 "-$1-$NOCR2" ; shift
+                  for HEADING do
+                      echo $NOCR1 "$TAB-$HEADING-$NOCR2"
+                  done
+                  echo "" )
+            fi | awk -F"$TAB" \
+                    "$WHERE { cnt += 1 ; printf \"$PRINTF\\n\", $FIELDS }
+                     END    { printf \"( %1d rows )\\n\",
+                            (\"$QUIET\" == \"Y\" ? cnt : (cnt - 1)) \
+                            >\"/tmp/$$row\" }" - $TABLEFILE | eval "$DIST" \
+                &&  if [ "$DISTINCT" = "" ] ; then
+                        cat /tmp/$$row
+                    else
+                        if [ "$QUIET" = "" ] ; then
+                            ROWS=`expr \`cat /tmp/$$row|wc -l\` - 1`
+                        else
+                            ROWS=`expr \`cat /tmp/$$row|wc -l\``
+                        fi
+                        echo '( '$ROWS' rows )'
+                    fi
+        fi
+    done
+    return 0
+}
+
+#**************************************************************************
+# alter_table - Performs alterations to a table.
+#**************************************************************************
+alter_table(){
+    TABLE=$3
+    [ ! -f "$TABLE@" ] && echo "Table not found." 1>&2 && return
+    if [ "X$4" = "Xadd" -a $# -ge 6 ] ; then
+        [ -f "$TABLE%" -o -f "$TABLE#" ] &&
+            echo "Can not add a column to a view." 1>&2 && return
+        [ "X$5" = "Xcolumn" ] && shift
+        NAME="$5"
+        TYPE="$6"
+        lookup_field "$NAME"
+        [ "$?" -eq 0 ] && echo "Column already exists ($NAME)" 1>&2 && return 1
+
+        # Set the column type.
+        case $TYPE in
+            *char*) TYPE="char";;
+            *int*)  TYPE="int";;
+            *)      echo "Invalid column type ($TYPE)" 1>&2
+                    syntax alter
+                    return;;
+        esac
+
+        # Set the width.
+        if [ "X$7" = "X(" ] ; then
+            # Get and check the column width.
+            WIDTH="$8"
+            [ ! "$WIDTH" -a ! `expr $WIDTH : '\([0-9]*\)$'` ] &&
+                echo "Bad columnwidth ($WIDTH)" 1>&2 &&
+                syntax alter && return
+            [ "X$9" != "X)" ] &&
+                echo "Bad column specification ($NAME)" 1>&2 &&
+                syntax alter && return
+        else
+            # Set the width to the width of the column name.
+            WIDTH=`echo "$NAME" | wc -m`
+            WIDTH=`expr $WIDTH + 1`
+        fi
+
+        # Add the column to the table files.
+        echo "$NAME$TAB$TYPE$WIDTH" >> $TABLE@
+        cp $TABLE~ /tmp/$$
+        sed 's/$/	/' < /tmp/$$ >$TABLE~
+        echo "OK"
+    elif [ "X$4" = "Xdrop" -a $# -ge 5 ] ; then
+        [ -f "$TABLE%" -o -f "$TABLE#" ] &&
+            echo "Can not drop a column from a view." 1>&2 && return
+        [ "X$5" = "Xcolumn" ] && shift
+        FIELD1="$5"
+        lookup_field "$FIELD1"
+        [ "$?" -ne 0 ] && echo "Bad field name ($FIELD1)" 1>&2 && return 1
+
+        # Remove the column from the data file.
+        if [ "$OUTFIELDNUM" -eq 1 ] ; then
+            STRING="2-"
+        elif [ "$OUTFIELDNUM" -eq 2 ] ; then
+            STRING="1,3-"
+        else
+            STRING="1-`expr $OUTFIELDNUM - 1`"
+            STRING="$STRING,`expr $OUTFIELDNUM + 1`-"
+        fi
+        cp $TABLE~ /tmp/$$
+        cut -d"	" -f $STRING /tmp/$$ > $TABLE~
+
+        # And the header file.
+        cp $TABLE@ /tmp/$$
+        grep -v "^$FIELD1" /tmp/$$ > $TABLE@
+    elif [ "X$4" = "Xrename" -a "X$5" = "Xto" -a $# -eq 6 ] ; then
+        TABLE1="$TABLE"
+        TABLE2="$6"
+        [ -f "$TABLE2@" ] && echo "Table already exists." 1>&2 && return
+
+        # Rename the table files.
+        mv $TABLE1@ $TABLE2@
+        mv $TABLE1~ $TABLE2~
+        [ -f "$TABLE1#" ] && mv $TABLE1\# $TABLE2\#
+
+        # If it's a view update the definition.
+        if [ -f "$TABLE1%" ] ; then
+            mv $TABLE1% $TABLE2%
+            set X `cat $TABLE2%`
+            TABLE="$2 $3 $4 $5"
+            shift 6
+            echo "$TABLE $TABLE2 $@" > $TABLE2%
+            update_view "$TABLE2"
+        fi
+
+        echo "OK"
+    elif [ "X$4" = "Xrename" -a $# -ge 7 ] ; then
+        [ -f "$TABLE%" -o -f "$TABLE#" ] &&
+            echo "Can not rename a column in a view." 1>&2 && return
+        [ "X$5" = "Xcolumn" ] && shift
+        FIELD1="$5"
+        FIELD2="$7"
+        lookup_field "$FIELD1"
+        [ "$?" -ne 0 ] && echo "Bad field name ($FIELD1)" 1>&2 && return 1
+        lookup_field "$FIELD2"
+        [ "$?" -eq 0 ] && echo "Field already exists ($FIELD2)" 1>&2 && return 1
+
+        # Rename the column.
+        cp $TABLE@ /tmp/$$
+        sed "s/^$FIELD1$TAB/$FIELD2$TAB/" < /tmp/$$ > $TABLE@
+
+        echo "OK"
+    elif [ "X$4" = "Xorder" -a $# -ge 6 ] ; then
+        [ -f "$TABLE%" -o -f "$TABLE#" ] &&
+            echo "Can not reorder a view." 1>&2 && return
+        shift 5
+
+        # Get the columns to sort by.
+        while [ $# -gt 0 ] ; do
+            if [ "X$1" != "Xasc" -a \
+                 "X$1" != "Xdesc" -a \
+                 "X$1" != "Xnum" ] ; then
+                lookup_field "$1"
+                [ "$?" -ne 0 ] && echo "Bad field name ($1)" 1>&2 && return 1
+                [ "$SORT" = "" ] && SORT="sort -t\"	\" "
+                SORTL="`expr $OUTFIELDNUM - 1`"
+                SORT="$SORT +$SORTL"
+                [ "X$2" = "Xnum" ] && SORT="${SORT}n"
+                [ `expr "$FORMAT" : '.*	\(int\).*'` ] && SORT="${SORT}n"
+                [ "X$2" = "Xdesc" ] && SORT="${SORT}r"
+                [ "X$3" = "Xdesc" ] && SORT="${SORT}r"
+                SORT="$SORT -$OUTFIELDNUM"
+            fi
+            shift
+        done
+
+        # Sort the table.
+        cp $TABLE~ /tmp/$$
+        cat /tmp/$$ | eval "$SORT" > $TABLE~
+        echo "OK"
+    elif [ "X$4" = "Xchange" -a $# -ge 8 ] ; then
+        [ -f "$TABLE%" -o -f "$TABLE#" ] &&
+            echo "Can not chage columns in a view." 1>&2 && return
+        shift 5
+        NAME="$1"
+        TYPE="$3"
+        lookup_field "$NAME"
+        [ "$?" -ne 0 ] && echo "Column does not exist ($NAME)" 1>&2 && return 1
+
+        # Set the column type.
+        case $TYPE in
+            *char*) TYPE="char";;
+            *int*)  TYPE="int";;
+            *)      echo "Invalid column type ($TYPE)" 1>&2
+                    syntax alter
+                    return;;
+        esac
+
+        # Set the width.
+        if [ "X$4" = "X(" ] ; then
+            # Get and check the column width.
+            WIDTH="$5"
+            [ ! "$WIDTH" -a ! `expr $WIDTH : '\([0-9]*\)$'` ] &&
+                echo "Bad columnwidth ($WIDTH)" 1>&2 &&
+                syntax alter && return
+            [ "X$6" != "X)" ] &&
+                echo "Bad column specification ($NAME)" 1>&2 &&
+                syntax alter && return
+        else
+            # Set the width to the width of the column name.
+            WIDTH=`echo "$NAME" | wc -m`
+            WIDTH=`expr $WIDTH + 1`
+        fi
+
+        # Change the column.
+        cp $TABLE@ /tmp/$$
+        sed "s/^$NAME.*/$NAME$TAB$TYPE$WIDTH/" < /tmp/$$ > $TABLE@
+        echo "OK"
+    else
+        echo "Improper syntax" 1>&2
+        syntax alter
+    fi
+}
+
+#**************************************************************************
+# use_database - Finds and uses the specified database.
+#**************************************************************************
+use_database(){
+    STRING="$1"
+    # If it's an absolute path try to use it as is.
+    if [ `expr "$STRING" : '[\/.~]'` -ne 0 ] ; then
+        if [ -d "$STRING" ] ; then
+            cd "$STRING"
+            DBNAME=`basename "$STRING"`
+            return
+        else
+            return 1
+        fi
+    fi
+
+    # Split the path and search for the database.
+    eval set X "`echo "$SHQL_PATH" | sed -e 's/:/ /g'`"
+    shift
+    [ "$#" -eq 0 ] &&
+        echo "Define the database paths (\$SHQL_PATH)." 1>&2 && exit
+    while [ "$#" -gt 0 ] ; do
+        if [ -d "$1/$STRING" ] ; then
+            cd "$1/$STRING"
+            DBNAME="$STRING"
+            return
+        fi
+        shift
+    done
+    return 1
+}
+
+#**************************************************************************
+# dump_database - Outputs a database as proper (shql) SQL.
+# Old format tables are handled properly.
+#**************************************************************************
+dump_database(){
+    # Go to the database.
+    use_database "$1" || usage "Unknown database for dump($1)"
+
+    # Loop over the tables and output the SQL definition for them.
+    for TABLE in `ls *@ *% *\# 2>/dev/null |
+                  cut -d@ -f1 | cut -d% -f1 | cut -d\# -f1 |
+                  uniq -u | sort` ; do
+        echo "-- Definition of the table $TABLE"
+        echo "create table $TABLE ("
+        sed -e 's/^\([^	]\{1,\}\)	\([^0-9]\{1,\}\)\([0-9]\{1,\}\)$/	\1	\2\(\3)/' \
+            -e 's/^\([^	]\{1,\}\)	\([0-9]\{1,\}\)$/	\1	char\(\2)/' \
+            -e '$!s/$/,/' < "$TABLE@"
+        echo ");$NL"
+    done
+
+    # Loop over the tables and output SQL insert statements.
+    for TABLE in `ls *@ *% *\# 2>/dev/null |
+                  cut -d@ -f1 | cut -d% -f1 | cut -d\# -f1 |
+                  uniq -u | sort` ; do
+        echo "-- Data for table $TABLE"
+        awk -F"$TAB" -v table="$TABLE" \
+            '{ printf "insert into %s values (", table
+               for (col = 1; col < NF + 1; col++) {
+                   if ((pos = match($col,"[\"`\\\\$]"))) {
+                       # Quote special characters.
+                       string = "";
+                       check = $col;
+                       do {
+                          quote = "\\\\"
+                          if (substr(check, pos, 1) == "\\") quote = "\\"
+                          string = string substr(check, 1, pos - 1) \
+                                   quote  substr(check, pos, 1);
+                          check = substr(check, pos + 1);
+                       } while ((pos = match(check,"[\"`\\\\$]")))
+                       string = string check;
+                       if (string ~ /\\$/)
+                           string = string "\\\\"
+                   } else
+                      string = $col;
+               
+                   printf "\"%s\"", string
+                   if (col < NF) printf "," }
+               printf ");\n"}' $TABLE~
+        echo
+    done
+
+    # Loop over the views and output the SQL definition for them.
+    # Output views by last modified to try and prevent dependency problems.
+    for VIEW in `ls -tr *% *\# 2>/dev/null | cut -d% -f1 | cut -d\# -f1` ; do
+        echo "-- Definition of the view $VIEW"
+        if [ -f "$VIEW%" ] ; then
+            set X `cat $VIEW%`
+            shift
+            TABLE1="$1"
+            FIELD1="$2"
+            TABLE2="$3"
+            FIELD2="$4"
+            shift 5
+            STRING=""
+            while [ $# -ge 1 ] ; do
+                [ "$STRING" ] && STRING="$STRING, "
+                STRING="$STRING$1"
+                shift
+            done
+            echo "create view $VIEW $STRING ($TABLE1.$FIELD1 = $TABLE2.$FIELD2);$NL"
+        else
+            eval set X `cat $VIEW#`
+            shift 5
+            echo "create view $VIEW as $@;$NL"
+        fi
+    done
+}
+
+#**************************************************************************
+# export_table - Outputs a table in CSV format.
+# Old format tables are handled properly.
+#**************************************************************************
+export_table(){
+    TABLE="$1"
+    [ "$QUOTELEVEL" ] || QUOTELEVEL="0"
+    [ -f "$TABLE@" -a -f "$TABLE~" ] ||
+        usage "Unknown table for export ($TABLE)."
+    update_view "$TABLE"
+    set X `cut -d\	 -f1 $TABLE@` ; shift
+    ( echo $NOCR1 "$1$NOCR2" ; shift
+      for HEADING do
+          echo $NOCR1 "$TAB$HEADING$NOCR2"
+      done
+      echo "" ) |
+        awk -F"$TAB" -v quotelevel="$QUOTELEVEL" \
+            '{for (col = 1; col < NF + 1; col++) {
+                if (length($col) != 0) {
+                    if ((pos = index($col,"\""))) {
+                        string = ""
+                        check = $col
+                        do {
+                           string = string substr(check, 1, pos-1) "\"\""
+                           check = substr(check, pos+1)
+                        } while ((pos = index(check,"\"")))
+                        string = string check
+                        printf "\"%s\"", string
+                    } else if (($col ~ /,/) || \
+                               (quotelevel >= 2) || \
+                               (quotelevel == 1 && \
+                                $col !~ /^-*[0-9.][0-9.]*$/))
+                        printf "\"%s\"", $col
+                    else
+                        printf "%s", $col
+                } else if (quotelevel == 3)
+                    printf "\"\""
+                if (col < NF) printf ","
+            }
+            printf "\n"}' - $TABLE~
+    exit
+}
+
+#**************************************************************************
+# list_to_table - Converts a list file to a table. The table is printed.
+#**************************************************************************
+list_to_table(){
+    echo "$1" |
+        awk -F"$TAB" \
+        'NR == 1 { # Grab the headers.
+            cols = NF
+            for (col = 1; col < cols; col++)
+                headers[$col] = col
+            next }
+        /^#/ { next } # Skip the informational comments.
+        length($0) == 0 { # Blank line, output the row.
+            for (col = 1; col < cols; col++) {
+                gsub(/\t/,"\\t",row[col])
+                printf "%s", row[col]
+                if (col < cols - 1) printf "\t"}
+            print ""
+            next }
+        {   # Gather the fields.
+            match($0,/: */)
+            data = substr($0,RSTART + RLENGTH);
+            row[headers[$1]] = data }' - $2
+}
+
+#**************************************************************************
+# edit_table - Edits a table in raw or list mode.
+#**************************************************************************
+edit_table(){
+    TABLE="$2"
+    [ ! -f "$TABLE@" ] && echo "Table not found." 1>&2 && return
+    [ -f "$TABLE%" -o -f "$TABLE#" ] &&
+        echo "Can not edit a view." 1>&2 && return
+    if [ $# -eq 4 -a "$4" = "list" ] ; then # List mode.
+        # Grab the headers.
+        HEADING=`cut -d\	 -f1 $TABLE@ | tr "\n" "$TAB"`
+        # Turn the table into a list.
+        echo "$HEADING" |
+            awk -F"$TAB" \
+            'BEGIN { # Print some informational comments.
+                print "# Do not alter the formatting."
+                print "# Only edit the text after \": \"." 
+                print "# Each section must have a blank line after it." }
+            NR == 1 { # Grab the headers.
+                cols = NF
+                for (col = 1; col < cols; col++)
+                    headers[col] = $col
+                next }
+            # Print each row as a list.
+            {   for (col = 1; col < cols; col++) {
+                    printf "%s\t: %s\n", headers[col], $col }
+                print ""}' - $TABLE~ > /tmp/$$
+        # Edit the list file.
+        $EDITOR /tmp/$$
+        # Convert the list file back to the table file.
+        list_to_table "$HEADING" "/tmp/$$" > $TABLE~
+    else # Normal mode, edit the actual table file.
+        $EDITOR $TABLE~
+    fi
+}
+
+#**************************************************************************
+# append_table - Adds a new row to a table via a list format temp file.
+#**************************************************************************
+append_table(){
+    TABLE="$2"
+    [ ! -f "$TABLE@" ] && echo "Table not found." 1>&2 && return
+    [ -f "$TABLE%" -o -f "$TABLE#" ] &&
+        echo "Can not append to a view." 1>&2 && return
+    # Grab the headers.
+    HEADING=`cut -d\	 -f1 $TABLE@ | tr "\n" "$TAB"`
+    # Turn the table into a list.
+    echo "$HEADING" |
+        awk -F"$TAB" \
+        'BEGIN { # Print some informational comments.
+            print "# Do not alter the formatting."
+            print "# Only add text after \": \"." 
+            print "# Sections must have a blank line after them." }
+        { # Grab and print the headers.
+            for (col = 1; col < NF; col++)
+                printf "%s\t: \n", $col
+            print "" }' - > /tmp/$$
+    # Edit the list file.
+    $EDITOR /tmp/$$
+    # Convert the list file back to the table file.
+    list_to_table "$HEADING" "/tmp/$$" >> $TABLE~
+}
+
+#**************************************************************************
+# Startup -  Startup and command line option processing.
+#**************************************************************************
+
+# Check and handle commandline options.
+while [ "$#" -gt 0 ] ; do
+    case "$1" in
+        # Create a database.
+        -c) [ "$2" ] && DBNAME="$2"
+            [ "$DBNAME" ] || usage "Specify a database for creation."
+            [ `expr "$DBNAME" : '[\/.~]'` -ne 0 ] &&
+                mkdir "$DBNAME" > /dev/null 2>&1 &&
+                echo "Database ($DBNAME) created." && exit
+            eval set X "`echo "$SHQL_PATH" | sed -e 's/:/ /g'`"
+            shift
+            while [ "$#" -gt 0 ] ; do
+                [ -d "$1" -a -w "$1" ] &&
+                    mkdir "$1/$DBNAME" > /dev/null 2>&1 &&
+                    echo "Database ($DBNAME) created in ($1)." && exit
+                shift
+            done
+            usage "Could not create database ($DBNAME).";;
+        # Dump a database.
+        -d) [ "$2" ] && DBNAME="$2"
+            [ "$DBNAME" ] || usage "Specify a database for dump."
+            dump_database "$DBNAME"
+            exit;;
+        # Debug mode.
+        -D) set -x
+            set -v
+            shift;;
+        # Export a table as CSV.
+        -e) EXPORT="$2"
+            [ "$EXPORT" ] || usage "Specify a table for export."
+            shift 2;;
+        # Quote mode for export.
+        -E) QUOTELEVEL="$2"
+            [ "$QUOTELEVEL" ] || usage "Specify the quote level for export."
+            shift 2;;
+        # Print the help text.
+        -h) usage;;
+        # List databases.
+        -l) list_databases ; exit 0;;
+        # Quite operation.
+        -q) QUIET="Y"; shift;;
+        # List tables in a database.
+        -t) LISTTABLES="Y"; shift;;
+        # List views in a database.
+        -v) LISTVIEWS="Y"; shift;;
+        -tv|-vt) LISTTABLES="Y"; LISTVIEWS="Y"; shift;;
+        # Database might have a funny name.
+        --) DBNAME="$2"; break;;
+        # Invalid option
+        -*) usage "Invalid option $1";;
+        *)  DBNAME="$1"; shift;;
+    esac
+done
+
+# Check for and cd into the database.
+if [ "X$DBNAME" = "X" ] ; then
+    usage "Missing database name."
+fi
+
+use_database "$DBNAME" || usage "Unknown database ($DBNAME)"
+
+# List relations and exit if requested.
+[ "$LISTTABLES" = "Y" -a "$LISTVIEWS" = "Y" ] &&
+    list_relations "all" && exit;
+[ "$LISTTABLES" = "Y" -a "$LISTVIEWS" != "Y" ] &&
+    list_relations "tables" && exit;
+[ "$LISTTABLES" != "Y" -a "$LISTVIEWS" = "Y" ] &&
+    list_relations "views" && exit;
+
+[ "$EXPORT" != "" ] && export_table "$EXPORT"
+
+# See if we are interactive.
+tty -s > /dev/null 2>&1
+[ $? -eq 0 ] && INTERACTIVE='Y' && echo "Database: $DBNAME"
+
+# Clean up on exit.
+trap "[ \"$INTERACTIVE\" = \"Y\" ] && echo \"Goodbye\"; \
+      rm -f /tmp/$$ /tmp/$$.sql /tmp/$$row /tmp/$$join*" 0 1 2 3 15
+
+#**************************************************************************
+# Main - The loop that handles input.
+#**************************************************************************
+while : ; do
+    while : ; do
+        if [ "$INTERACTIVE" = "Y" ] ; then
+            STRING="?"
+            [ "$NEW" = "Y" -o "$_CMD" = "" ] && STRING=">"
+            echo $NOCR1 "$DBNAME$STRING $NOCR2"
+        fi
+        read LINE || exit
+        SQLPART="`expr "X$LINE" : 'X\(..*\)/. *$'`"
+        if [ "$SQLPART" != "" -o `expr "X$LINE" : 'X.*; *$'` -ne 0 ] ; then
+            [ "$NEW" = "Y" ] && _CMD=""
+            if [ "`expr "$LINE" : '.*/p/g *$'`" -ne 0 ] ; then
+                LINE=`expr "$LINE" : '\(.*\)/p/g *$'`
+                [ "$LINE" ] && _CMD="$_CMD$LINE$NL"
+                LINE="/p/g"
+                NEW=""
+            elif [ "`expr "$LINE" : '.*; *$'`" -ne 0 ] ; then
+                LINE=`expr "$LINE" : '\(.*\); *$'`
+                [ "$LINE"  ] && _CMD="$_CMD$LINE$NL"
+                LINE="/g"
+                NEW=""
+            else
+                _CMD="$_CMD""$SQLPART""$NL"
+                LINE="`expr "$LINE" : '.*\(/.\) *$'`"
+                NEW=""
+            fi
+        fi
+        case "$LINE" in
+            /a*)    LINE=`expr "$LINE" : '/a *\(.*\)'`
+                    if [ "$LINE" ] ; then
+                        append_table "append" "$LINE"
+                    else
+                        echo "/a requires a table"
+                        echo ""
+                        help "help" "commands"
+                    fi;;
+            /c)     clear;;
+            /d*)    if [ `expr "$LINE" : '/d[tv]*$'` -ne 0 ] ; then
+                        LINE=`expr "$LINE" : '/d\(.*\)'`
+                        case "$LINE" in
+                            t) help "help" "tables";;
+                            v) help "help" "views";;
+                            *) help "help" "all";
+                        esac
+                    else
+                        LINE=`expr "$LINE" : '/d[tv]* *\(.*\)'`
+                        if [ -f "$LINE@" ] ; then
+                            help "help" "$LINE"
+                        else
+                            echo "$LINE does not exist." 1>&2
+                        fi
+                    fi;;
+            /e*)    LINE=`expr "$LINE" : '/e *\(.*\)'`
+                    if [ "$LINE" ] ; then
+                        if [ -f "$LINE%" -o -f "$LINE#" ] ; then
+                            echo "Can not edit a view." 1>&2
+                        elif [ -f "$LINE@" ] ; then
+                            $EDITOR "$LINE@"
+                        else
+                            echo "$LINE does not exist." 1>&2
+                        fi
+                    else
+                        umask $UMASK
+                        echo "$_CMD" > /tmp/$$.sql
+                        $EDITOR /tmp/$$.sql
+                        _CMD="`cat /tmp/$$.sql`$NL"
+                        umask 0000
+                    fi;;
+            /g)     break;;
+            /h*)    LINE=`expr "$LINE" : '/h *\(.*\)'`
+                    help "help" "$LINE";;
+            /i*)    LINE=`expr "$LINE" : '/i *\(.*\)$'`
+                    if [ "$LINE" = "" ] ; then
+                        echo $NOCR1 "Enter include file: $NOCR2"
+                        read LINE
+                    fi
+                    if [ "$LINE" ] ; then
+                        [ ! `expr "$LINE" : '\(/.*\)'` ] && LINE="$_CD/$LINE"
+                        if [ -f "$LINE" ] ; then
+                            _CMD="$_CMD`cat $LINE`$NL"
+                            echo "$LINE included"
+                        else
+                            echo "$LINE does not exist." 1>&2
+                        fi
+                    fi;;
+            /l)     list_databases;;
+            /p*)    [ "$LINE" = "/p/g" ] && echo "$_CMD" && break
+                    LINE=`expr "$LINE" : '/p *\(.*\)$'`
+                    if [ "$LINE" ] ; then
+                        if [ -f "$LINE~" ] ; then
+                            select_ "select" '*' "from" "$LINE"
+                        else
+                            echo "$LINE does not exist." 1>&2
+                        fi
+                    else
+                        echo "$_CMD";
+                    fi;;
+            /q)     exit 0;;
+            /r)     echo "reset" ; _CMD="";;
+            /s*|/!*)LINE=`expr "$LINE" : '/[s!] *\(.*\)'`
+                    umask $UMASK
+                    if [ "$LINE" ] ; then
+                        CD=`pwd`; cd $_CD
+                        $LINE
+                        _CD=`pwd`; cd $CD
+                    else
+                        cd $_CD
+                        $SHELL
+                    fi
+                    umask 0000;;
+            /u*)    LINE=`expr "$LINE" : '/u *\(.*\)'`
+                    use_database "$LINE"
+                    if [ "$?" -ne 0 ] ; then
+                        echo "Unknown database ($LINE)" 1>&2
+                    fi;;
+            /w*)    LINE=`expr "$LINE" : '/w *\(.*\)$'`
+                    if [ "$LINE" = "" ] ; then
+                        echo $NOCR1 "Enter output file: $NOCR2"
+                        read LINE
+                    fi
+                    if [ "$LINE" ] ; then
+                        [ ! `expr "$LINE" : '\(/.*\)'` ] && LINE="$_CD/$LINE"
+                        umask $UMASK
+                        echo "$_CMD" > "$LINE"
+                        umask 0000
+                        echo "$LINE written"
+                    fi;;
+            /\?)    help "help" "commands";;
+            \#*|--*)[ "$NEW" = "Y" ] && _CMD="" ;;
+            *)      [ "$LINE" = "quit" -a "$_CMD" = "" ] && exit 0
+                    [ "$NEW" = "Y" ] && _CMD=""
+                    _CMD="$_CMD$LINE $NL"
+                    NEW="";;
+        esac
+    done
+
+    # Split up the command so it can be processed.
+    CMD=`echo "$_CMD" |
+        sed -e "s/\(.\)/\\\\$NL\\1/g" |
+        awk -v quote="'" \
+            'BEGIN {
+                ds=0;    # Inside a double quoted string.
+                ss=0;    # Inside a single quoted string.
+                last=""; # The last character seen.
+            }
+            $0 == "\\\\" && (ds || ss) {
+                bs = 1; # The number of \ encountered.
+                while (getline && $0 == "\\\\")
+                    bs++;
+                if (ss) {
+                    bs++
+                } else if ($0 == "\"" || $0 == "\`" || $0 == "\$") {
+                    if (bs % 2 == 0)
+                        bs = (bs / 2) + 1;
+                    else {
+                        printf "\\\\\\\\\\\\";
+                        bs--
+                        last = "\\\\";
+                    }
+                } else
+                    printf "\\\\\\\\";
+                for (i = 1; i < bs; i++)
+                    printf "\\\\\\\\\\\\\\\\";
+            }
+            $0 == "\"" && !ss {
+                if (ds == 1) {
+                    if (last == "\\\\") {
+                        printf "%s", $0;
+                    } else {
+                        ds = 0;
+                        printf "\\\\\"\"";
+                    }
+                } else {
+                    ds = 1;
+                    printf "\"\\\\\"";
+                }
+            }
+            $0 == quote && !ds {
+                if (ss ==1) {
+                    ss = 0;
+                    printf "\\\\\"\"";
+                } else {
+                    ss = 1;
+                    printf "\"\\\\\"";
+                }
+            }
+            $0 == "\"" && ss { printf "\\\\\\\\\\\\%s", $0; }
+            $0 == quote && ds { printf "%s", $0; }
+            $0 != "\"" && $0 != quote && (ds || ss) {
+                if (ss && $0 ~ /[$\`]/) printf "\\\\\\\\\\\\%s", $0;
+                else if ($0 == "\t")    printf "\\\\\\\\\\\\t";
+                else                    printf "%s", $0;
+            }
+            $0 != "\"" && $0 != quote && !ds && !ss {
+                     if ($0 ~ /[()<>*]/)    printf " \\\\%s ", $0;
+                else if ($0 ~ /[-+\/%^!=]/) printf " %s ", $0;
+                else if ($0 ~ /[,\t]/)      printf " ";
+                else                        printf "%s", $0;
+            }
+            { last = $0 }'`
+# This is the original version of the above.
+# It has been preserved for reference purposes.
+#   CMD=`echo "$_CMD" | sed \
+#         -e "s/'/\"/g" \
+#         -e 's/\"\([^\"]*\)\"/\"\\\"\1\\\"\"/g' \
+#         -e 's/\([<>!=][<>!=]*\)/ \1 /g' \
+#         -e 's/\([-+*/%^]\)/ \1 /g' \
+#         -e 's/</\\\</g' \
+#         -e 's/>/\\\>/g' \
+#         -e 's/\*/\\\*/g' \
+#         -e 's/(/ \\\( /g' \
+#         -e 's/)/ \\\) /g'`
+    [ ! "$CMD" ] && continue
+    eval set X $CMD
+    shift
+    NEW="Y"
+    case $1 in
+        alter)      alter_table "$@";;
+        append)     append_table "$@";;
+        create)     create "$@";;
+        delete)     delete "$@";;
+        drop)       drop "$@";;
+        edit)       edit_table "$@";;
+        help)       help "$@";;
+        insert)     insert "$@";;
+        print)      select_ "select" '*' "from" "$2";;
+        quit)       exit;;
+        rename)     alter_table "alter" "table" "$2" "rename" "to" "$4";;
+        select)     select_ "$@";;
+        truncate)   delete "delete" "from" "$2";;
+        update)     update "$@";;
+        *)          echo "Missing or unrecognized command." 1>&2 ;;
+    esac
+done

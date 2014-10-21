@@ -1,0 +1,9 @@
+Add constraints to columns. This will require a rewrite of the insert and
+update handlers.  The constraints can easily be added to the header file after
+the column type with a tab. Probably writing the data to a temp file then
+running a small AWK script to check and add the data would work. For inserts
+from select statements the select into functionality could be used.
+
+Date and boolean data types would be nice. This would also affect insert. Dates
+could be stored as seconds since epoc adjusted for GMT + original timezone.
+This would allow correct sorting of dates/times regardless of timezone.

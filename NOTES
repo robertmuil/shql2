@@ -1,0 +1,47 @@
+General notes and observations about shql that don't really seem to fit
+anywhere else.
+
+Paths:
+    When shql uses a database it changes into the directory where that database
+    resides. Before doing so it saved the path it was run from. This path is
+    used with certain commands. When reading a file into the query buffer or
+    writing the query buffer out to a file this saved path is prepended to the
+    file name unless the file starts with a "/". If the file name starts with a
+    "/" it is assumed to be a absolute path. When starting a sub shell or
+    running a shell command via the /s and /! commands shql changes to the
+    original path first. When a new shell is started the new path is lost, when
+    executing shell commands the path is updated. This allows you to change
+    directories with the command "/! cd PATH". This does not apply to commands
+    that may be run in SQL statements. There is no easy way to identify this,
+    so always use absolute paths.
+
+Finding Databases:
+    When shql is started it searches for the database in the paths specified by
+    the environment variable $SHQL_PATH. If the database name starts with ".",
+    "/" or "~" it is assumed the path to the database is specified. Shql
+    attempts to use that path and will not search in $SHQL_PATH. This also
+    applies when creating a database with the -c command.
+
+Shell Commands:
+    shql uses the shell /bin/sh. This means when a shell command is run via /s,
+    /! or in an SQL statement it is run with the same shell. The commands also
+    have access to the variables in use by shql. Caution should be exercised
+    that the variables are not manipulated.
+
+Column Names:
+    Column names should only contain the characters a-z, A-Z, 0-9 and _.
+    Because of the addition of math characters like - and + are not allowed.
+    This can be worked around by quoting the table name with double quotes. If
+    this is done the table name will always have to be quoted because it will
+    be stored with the double quotes. Spaces should never be used.
+
+csv2shql:
+    The program tries it's best to do the right thing. It's not possible
+    thought to make it handle every possible case. When the -c option is
+    supplied it replaces spaces with underscores "_". Any other invalid
+    characters are not dealt with and will cause an error with shql.
+
+* in select:
+    Due to the way SQL statements are parse and the addition of math * only
+    means "all columns" when it is in the first column position in a SELECT
+    statement. If it is after a column name it means multiplication.

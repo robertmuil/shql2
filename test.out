@@ -1,0 +1,148 @@
+OK
+( 1 rows )
+( 1 rows )
+( 1 rows )
+( 1 rows )
+( 1 rows )
+( 1 rows )
+( 1 rows )
+( 1 rows )
+( 1 rows )
+( 1 rows )
+|-string-                 |
+|foo/bar\baz              |
+|foo/bar\baz              |
+|foo"bar"baz              |
+|foo"bar"baz              |
+|foo`bar$baz%             |
+|foo`bar$baz%             |
+|<foo(bar)baz>\           |
+|<foo(bar)baz>\           |
+|foo'bar&baz              |
+|foo bar,baz              |
+( 10 rows )
+OK
+( 10 rows )
+|-string-                 |
+|foo/bar\baz              |
+|foo/bar\baz              |
+|foo"bar"baz              |
+|foo"bar"baz              |
+|foo`bar$baz%             |
+|foo`bar$baz%             |
+|<foo(bar)baz>\           |
+|<foo(bar)baz>\           |
+|foo'bar&baz              |
+|foo bar,baz              |
+( 10 rows )
+OK
+|-string-                 |
+|<foo(bar)baz>\           |
+|<foo(bar)baz>\           |
+|<foo(bar)baz>\           |
+|<foo(bar)baz>\           |
+|foo bar,baz              |
+|foo"bar"baz              |
+|foo"bar"baz              |
+|foo"bar"baz              |
+|foo"bar"baz              |
+|foo'bar&baz              |
+|foo/bar\baz              |
+|foo/bar\baz              |
+|foo/bar\baz              |
+|foo/bar\baz              |
+|foo`bar$baz%             |
+|foo`bar$baz%             |
+|foo`bar$baz%             |
+|foo`bar$baz%             |
+( 18 rows )
+OK
+|-string-                 |
+|<foo(bar)baz>\           |
+|<foo(bar)baz>\           |
+|<foo(bar)baz>\           |
+|<foo(bar)baz>\           |
+|foo bar,baz              |
+|foo"bar"baz              |
+|foo"bar"baz              |
+|foo"bar"baz              |
+|foo"bar"baz              |
+|foo'bar&baz              |
+|foo/bar\baz              |
+|foo/bar\baz              |
+|foo/bar\baz              |
+|foo/bar\baz              |
+|foo`bar$baz%             |
+|foo`bar$baz%             |
+|foo`bar$baz%             |
+|foo`bar$baz%             |
+( 18 rows )
+( 6 rows )
+|-string-                 |
+|foo/bar\baz              |
+|foo/bar\baz              |
+|foo"bar"baz              |
+|foo"bar"baz              |
+|foo'bar&baz              |
+|foo bar,baz              |
+( 6 rows )
+( 10 rows )
+( 1 rows )
+|-string-                 |
+|This is a test string.   |
+( 1 rows )
+|(lower)                  |
+|this is a test string.   |
+( 1 rows )
+|(upper)                  |
+|THIS IS A TEST STRING.   |
+( 1 rows )
+|  (length)|
+|        22|
+( 1 rows )
+|  (length)|
+|        22|
+( 1 rows )
+|   (index)|
+|        11|
+( 1 rows )
+|(pos)|
+|    9|
+( 1 rows )
+|   (match)|
+|         1|
+( 1 rows )
+|(substr)                 |
+|is a test string.        |
+( 1 rows )
+|(sub|
+|test|
+( 1 rows )
+OK
+( 3 rows )
+|    -numa-|    -numb-|
+|         1|         5|
+|         5|         3|
+|         3|         5|
+( 3 rows )
+|(multiply)|  (divide)|     (add)|(subtract)|  (modulo)|(exponent)|
+|         5|       0.2|         6|        -4|         1|         5|
+|        15|   1.66667|         8|         2|         2|       243|
+|        15|       0.6|         8|        -2|         3|       125|
+( 3 rows )
+|     (cos)|     (exp)|     (int)|     (log)|     (sin)|    (sqrt)|
+|  0.540302|   2.71828|         2|         0|  0.841471|         1|
+|  0.283662|   148.413|       148|   1.60944| -0.958924|   2.23607|
+| -0.989992|   20.0855|        20|   1.09861|   0.14112|   1.73205|
+( 3 rows )
+OK
+( 3 rows )
+|(substr)                 |
+|This                     |
+| is                      |
+|is is                    |
+( 3 rows )
+|         3|         3|         5|         1|         9|
+( 0 rows )
+|10                       |fooaraz                |<foo(bar)baz>\           |
+( 0 rows )
