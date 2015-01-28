@@ -113,3 +113,8 @@ LnBhLnVzPg==
 
         It is public domain, meaning anything can be done with it, though I
         would like my name to remain associated with the code in some way.
+
+Known Problems:
+
+1. does not work with dash
+2. problems with sort 8.21? test fails complaining of +0 argument. needs investigation.

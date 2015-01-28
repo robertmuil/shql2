@@ -7,3 +7,5 @@ from select statements the select into functionality could be used.
 Date and boolean data types would be nice. This would also affect insert. Dates
 could be stored as seconds since epoc adjusted for GMT + original timezone.
 This would allow correct sorting of dates/times regardless of timezone.
+
+Fails on dash: so does not work on systems that link /bin/sh to this.
